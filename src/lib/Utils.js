@@ -1,6 +1,5 @@
-export default class Utils {
-
-    static hashStr(str, bits) {
+export default {
+    hashStr(str, bits) {
         let hash = 5381;
         let i = str.length;
         bits = bits ? bits : 8;
@@ -15,9 +14,9 @@ export default class Utils {
         // integers. Since we want the results to be always positive, convert the
         // signed int to an unsigned by doing an unsigned bitshift. */
         return hash;
-    }
+    },
 
-    static arrayBuffersEqual(buf1, buf2) {
+    arrayBuffersEqual(buf1, buf2) {
         if (buf1.byteLength !== buf2.byteLength) return false;
         let dv1 = new Int8Array(buf1);
         let dv2 = new Int8Array(buf2);
@@ -25,9 +24,9 @@ export default class Utils {
             if (dv1[i] !== dv2[i]) return false;
         }
         return true;
-    }
+    },
 
-    static httpGetPromise(url) {
+    httpGetPromise(url) {
         return new Promise((resolve, reject) => {
             let req = new XMLHttpRequest();
             req.open('GET', url, true);
@@ -35,7 +34,7 @@ export default class Utils {
                 if (req.status >= 200 && req.status < 400) resolve(JSON.parse(req.responseText));
                 else reject();
             };
-            req.onerror = () => {};
+            req.onerror = () => { };
             req.send();
         });
     }

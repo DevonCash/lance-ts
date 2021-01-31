@@ -1,10 +1,11 @@
 import fs from 'fs';
-import mkdirp from 'mkdirp';
+import { sync as mkdirp } from 'mkdirp';
 import Utils from './lib/Utils';
 import Scheduler from './lib/Scheduler';
 import Serializer from './serialize/Serializer';
 import NetworkTransmitter from './network/NetworkTransmitter';
 import NetworkMonitor from './network/NetworkMonitor';
+import GameEngine from './GameEngine';
 
 /**
  * ServerEngine is the main server-side singleton code.
@@ -23,7 +24,33 @@ import NetworkMonitor from './network/NetworkMonitor';
  * connections and dis-connections, emitting periodic game-state
  * updates, and capturing remote user inputs.
  */
-class ServerEngine {
+interface ServerEngineOptions {
+    stepRate?: number // number of steps per second
+    updateRate?: number // number of steps per sync
+    fullSyncRate?: number // number of steps per full sync
+    tracesPath?: string // Path to traces output
+    countConnections?: boolean // Whether the number of concurrent connections is counted.
+    timeoutInterval?: number // Number of seconds after which an idle connection is culled.
+    updateOnObjectCreation?: boolean
+    debug?: {
+        serverSendLag: boolean
+    }
+}
+
+abstract class ServerEngine {
+    options: ServerEngineOptions;
+    io: any;
+    serializer: any;
+    gameEngine: GameEngine<any>;
+    networkTransmitter: NetworkTransmitter;
+    networkMonitor: NetworkMonitor;
+    DEFAULT_ROOM_NAME: string;
+    rooms: {};
+    connectedPlayers: {};
+    playerInputQueues: {};
+    objMemory: { [key: string]: any };
+    scheduler: Scheduler;
+    serverTime: number;
 
     /**
      * create a ServerEngine instance
@@ -40,8 +67,8 @@ class ServerEngine {
      * @param {Number} options.timeoutInterval=180 - number of seconds after which a player is automatically disconnected if no input is received. Set to 0 for no timeout
      * @return {ServerEngine} serverEngine - self
      */
-    constructor(io, gameEngine, options) {
-        this.options = Object.assign({
+    constructor(io: Socket, gameEngine: GameEngine<any>, options: ServerEngineOptions = {}) {
+        this.options = {
             updateRate: 6,
             stepRate: 60,
             fullSyncRate: 20,
@@ -51,11 +78,12 @@ class ServerEngine {
             countConnections: true,
             debug: {
                 serverSendLag: false
-            }
-        }, options);
+            },
+            ...options
+        }
         if (this.options.tracesPath !== '') {
             this.options.tracesPath += '/';
-            mkdirp.sync(this.options.tracesPath);
+            mkdirp(this.options.tracesPath);
         }
 
         this.io = io;
@@ -133,11 +161,11 @@ class ServerEngine {
         this.gameEngine.step(false, this.serverTime / 1000);
 
         // synchronize the state to all clients
-        Object.keys(this.rooms).map(this.syncStateToClients.bind(this));
+        Object.keys(this.rooms).forEach(this.syncStateToClients, this);
 
         // remove memory-objects which no longer exist
-        for (let objId of Object.keys(this.objMemory)) {
-            if (!(objId in this.gameEngine.world.objects)) {
+        for (const objId of Object.keys(this.objMemory)) {
+            if (!this.gameEngine.world.has(objId)) {
                 delete this.objMemory[objId];
             }
         }
@@ -202,29 +230,23 @@ class ServerEngine {
             fullUpdate: Number(!diffUpdate)
         });
 
-        const roomObjects = Object.keys(world.objects)
-            .filter(o => world.objects[o]._roomName === roomName);
-        for (let objId of roomObjects) {
-            let obj = world.objects[objId];
-            let prevObject = this.objMemory[objId];
+        world.forEach(o => {
+            if (o._roomName !== roomName) return;
+            const prevObj = this.objMemory[o.id];
 
-            // if the object (in serialized form) hasn't changed, move on
             if (diffUpdate) {
-                let s = obj.serialize(this.serializer);
-                if (prevObject && Utils.arrayBuffersEqual(s.dataBuffer, prevObject))
-                    continue;
-                else
-                    this.objMemory[objId] = s.dataBuffer;
+                const s = o.serialize(this.serializer);
+                if (prevObj && Utils.arrayBuffersEqual(s.dataBuffer, prevObj)) return;
+                this.objMemory[o.id] = s.dataBuffer;
 
-                // prune strings which haven't changed
-                obj = obj.prunedStringsClone(this.serializer, prevObject);
+                o = o.pruneStringsClone(this.serializer, prevObj)
             }
 
             this.networkTransmitter.addNetworkedEvent('objectUpdate', {
                 stepCount: world.stepCount,
-                objectInstance: obj
-            });
-        }
+                objectInstance: o
+            })
+        })
 
         return this.networkTransmitter.serializePayload();
     }
@@ -284,7 +306,7 @@ class ServerEngine {
     }
 
     // handle the object creation
-    onObjectAdded(obj) {
+    protected onObjectAdded(obj) {
         obj._roomName = obj._roomName || this.DEFAULT_ROOM_NAME;
         this.networkTransmitter.addNetworkedEvent('objectCreate', {
             stepCount: this.gameEngine.world.stepCount,
@@ -297,18 +319,17 @@ class ServerEngine {
     }
 
     // handle the object creation
-    onObjectDestroyed(obj) {
+    protected onObjectDestroyed(obj) {
         this.networkTransmitter.addNetworkedEvent('objectDestroy', {
             stepCount: this.gameEngine.world.stepCount,
             objectInstance: obj
         });
     }
 
-    getPlayerId(socket) {
-    }
+    abstract getPlayerId(socket): number;
 
     // handle new player connection
-    onPlayerConnected(socket) {
+    protected onPlayerConnected(socket) {
         let that = this;
 
         console.log('Client connected');
@@ -337,7 +358,7 @@ class ServerEngine {
         this.gameEngine.emit('playerJoined', playerEvent);
         socket.emit('playerJoined', playerEvent);
 
-        socket.on('disconnect', function() {
+        socket.on('disconnect', function () {
             playerEvent.disconnectTime = (new Date()).getTime();
             that.onPlayerDisconnected(socket.id, playerId);
             that.gameEngine.emit('server__playerDisconnected', playerEvent);
@@ -345,12 +366,12 @@ class ServerEngine {
         });
 
         // todo rename, use number instead of name
-        socket.on('move', function(data) {
+        socket.on('move', function (data) {
             that.onReceivedInput(data, socket);
         });
 
         // we got a packet of trace data, write it out to a side-file
-        socket.on('trace', function(traceData) {
+        socket.on('trace', function (traceData) {
             traceData = JSON.parse(traceData);
             let traceString = '';
             traceData.forEach(t => { traceString += `[${t.time}]${t.step}>${t.data}\n`; });
@@ -361,13 +382,13 @@ class ServerEngine {
     }
 
     // handle player timeout
-    onPlayerTimeout(socket) {
+    protected onPlayerTimeout(socket) {
         console.log(`Client timed out after ${this.options.timeoutInterval} seconds`, socket.id);
         socket.disconnect();
     }
 
     // handle player dis-connection
-    onPlayerDisconnected(socketId, playerId) {
+    protected onPlayerDisconnected(socketId, playerId) {
         delete this.connectedPlayers[socketId];
         console.log('Client disconnected');
     }

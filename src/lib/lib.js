@@ -1,5 +1,1 @@
-import Trace from './Trace.js';
-
-export default {
-    Trace
-};
+export { default as Trace } from './Trace.js';

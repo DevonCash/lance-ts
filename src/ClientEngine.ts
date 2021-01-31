@@ -5,6 +5,7 @@ import Synchronizer from './Synchronizer';
 import Serializer from './serialize/Serializer';
 import NetworkMonitor from './network/NetworkMonitor';
 import NetworkTransmitter from './network/NetworkTransmitter';
+import GameEngine from './GameEngine';
 
 // TODO: the GAME_UPS below should be common to the value implemented in the server engine,
 // or better yet, it should be configurable in the GameEngine instead of ServerEngine+ClientEngine
@@ -21,37 +22,74 @@ const STEP_HURRY_MSEC = 8; // if backward drift detected, hurry next execution b
  * override the constructor {@link ClientEngine#constructor} and the methods
  * {@link ClientEngine#start} and {@link ClientEngine#connect}
  */
+
+enum SchedulerType {
+    Renderer,
+    Fixed
+}
+
+enum SyncType {
+    Interolate,
+    Extrapolate,
+    FrameSync
+}
+
+interface ClientSyncOptions {
+    reflect: boolean;
+    sync?: SyncType // chosen sync option, can be "interpolate", "extrapolate", or "frameSync"
+    localObjBending?: number // amount (0 to 1.0) of bending towards original client position, after each sync, for local objects
+    remoteObjBending?: number // amount (0 to 1.0) of bending towards original client position, after each sync, for remote objects
+    serverURL?: string // Socket server url
+}
+
+interface ClientInputOptions {
+    serverURL: any;
+    matchmaker: any;
+    verbose?: boolean,
+    autoConnect?: boolean // if true, the client will automatically attempt connect to server.
+    standaloneMode?: boolean // if true, the client will never try to connect to a server
+    delayInputCount?: number // if set, inputs will be delayed by this many steps before they are actually applied on the client.
+    healthCheckInterval?: number // health check message interval (millisec). Default is 1000.
+    healthCheckRTTSample?: number // health check RTT calculation sample size. Default is 10.
+    scheduler?: SchedulerType  // When set to "render-schedule" the game step scheduling is controlled by the renderer and step time is variable.  When set to "fixed" the game step is run independently with a fixed step time. Default is "render-schedule".
+    syncOptions?: ClientSyncOptions // an object describing the synchronization method. If not set, will be set to extrapolate, with local object bending set to 0.0 and remote object bending set to 0.6. If the query-string parameter "sync" is defined, then that value is passed to this object's sync attribute.
+    stepPeriod?: number // The time elapsed between game steps
+}
+
 class ClientEngine {
 
-    /**
-      * Create a client engine instance.
-      *
-      * @param {GameEngine} gameEngine - a game engine
-      * @param {Object} inputOptions - options object
-      * @param {Boolean} inputOptions.verbose - print logs to console
-      * @param {Boolean} inputOptions.autoConnect - if true, the client will automatically attempt connect to server.
-      * @param {Boolean} inputOptions.standaloneMode - if true, the client will never try to connect to a server
-      * @param {Number} inputOptions.delayInputCount - if set, inputs will be delayed by this many steps before they are actually applied on the client.
-      * @param {Number} inputOptions.healthCheckInterval - health check message interval (millisec). Default is 1000.
-      * @param {Number} inputOptions.healthCheckRTTSample - health check RTT calculation sample size. Default is 10.
-      * @param {String} inputOptions.scheduler - When set to "render-schedule" the game step scheduling is controlled by the renderer and step time is variable.  When set to "fixed" the game step is run independently with a fixed step time. Default is "render-schedule".
-      * @param {Object} inputOptions.syncOptions - an object describing the synchronization method. If not set, will be set to extrapolate, with local object bending set to 0.0 and remote object bending set to 0.6. If the query-string parameter "sync" is defined, then that value is passed to this object's sync attribute.
-      * @param {String} inputOptions.syncOptions.sync - chosen sync option, can be "interpolate", "extrapolate", or "frameSync"
-      * @param {Number} inputOptions.syncOptions.localObjBending - amount (0 to 1.0) of bending towards original client position, after each sync, for local objects
-      * @param {Number} inputOptions.syncOptions.remoteObjBending - amount (0 to 1.0) of bending towards original client position, after each sync, for remote objects
-      * @param {String} inputOptions.serverURL - Socket server url
-      * @param {Renderer} Renderer - the Renderer class constructor
-      */
-    constructor(gameEngine, inputOptions, Renderer) {
+    gameEngine: GameEngine<any>;
+    options: ClientInputOptions;
+    Renderer: Renderer;
+    socket: SocketIOClient.Socket
+    serializer: Serializer;
+    networkTransmitter: NetworkTransmitter;
+    networkMonitor: NetworkMonitor;
+    inboundMessages: any[];
+    outboundMessages: any[];
+    renderer: any;
+    scheduler: any;
+    lastStepTime: number;
+    correction: number;
+    delayedInputs: any[];
+    synchronizer: Synchronizer;
+    messageIndex: number;
+    stopped: boolean;
+    resolved: boolean;
+    lastTimestamp: any;
+    resolveGame: (value: unknown) => void;
+    skipOneStep: boolean;
 
-        this.options = Object.assign({
+    constructor(gameEngine: GameEngine<any>, inputOptions: ClientInputOptions, Renderer: Renderer) {
+
+        this.options = {
             autoConnect: true,
             healthCheckInterval: 1000,
             healthCheckRTTSample: 10,
             stepPeriod: 1000 / GAME_UPS,
-            scheduler: 'render-schedule',
-            serverURL: null,
-        }, inputOptions);
+            scheduler: SchedulerType.Renderer,
+            ...inputOptions,
+        }
 
         /**
          * reference to serializer
@@ -72,7 +110,7 @@ class ClientEngine {
         this.outboundMessages = [];
 
         // create the renderer
-        this.renderer = this.gameEngine.renderer = new Renderer(gameEngine, this);
+        this.renderer = new Renderer(gameEngine, this);
 
         // step scheduler
         this.scheduler = null;
@@ -94,17 +132,8 @@ class ClientEngine {
     }
 
     // configure the Synchronizer singleton
-    configureSynchronization() {
-
-        // the reflect syncronizer is just interpolate strategy,
-        // configured to show server syncs
-        let syncOptions = this.options.syncOptions;
-        if (syncOptions.sync === 'reflect') {
-            syncOptions.sync = 'interpolate';
-            syncOptions.reflect = true;
-        }
-
-        this.synchronizer = new Synchronizer(this, syncOptions);
+    configureSynchronization(): void {
+        this.synchronizer = new Synchronizer(this, this.options.syncOptions);
     }
 
     /**
@@ -115,50 +144,46 @@ class ClientEngine {
      * @param {Object} [options] additional socket.io options
      * @return {Promise} Resolved when the connection is made to the server
      */
-    connect(options = {}) {
+    async connect(options: SocketIOClient.ConnectOpts = {}): Promise<void> {
 
-        let connectSocket = matchMakerAnswer => {
-            return new Promise((resolve, reject) => {
+        const matchmaker = this.options.matchmaker
+            ? await Utils.httpGetPromise(this.options.matchmaker)
+            : { serverURL: this.options.serverURL, status: 'ok' };
 
-                if (matchMakerAnswer.status !== 'ok')
-                    reject('matchMaker failed status: ' + matchMakerAnswer.status);
+        if (matchmaker.status !== 'ok')
+            throw 'matchMaker failed status: ' + matchmaker.status;
 
+        if (this.options.verbose)
+            console.log(`connecting to game server ${matchmaker.serverURL}`);
+
+        this.socket = io(matchmaker.serverURL, options);
+
+        this.networkMonitor.registerClient(this);
+
+        this.socket.on('playerJoined', (playerData) => {
+            this.gameEngine.playerId = playerData.playerId;
+            this.messageIndex = Number(this.gameEngine.playerId) * 10000;
+        });
+
+        this.socket.on('worldUpdate', (worldData) => {
+            this.inboundMessages.push(worldData);
+        });
+
+        this.socket.on('roomUpdate', (roomData) => {
+            this.gameEngine.emit('client__roomUpdate', roomData);
+        });
+
+        await new Promise<void>((resolve, reject) => {
+            this.socket.once('connect', () => {
                 if (this.options.verbose)
-                    console.log(`connecting to game server ${matchMakerAnswer.serverURL}`);
-                this.socket = io(matchMakerAnswer.serverURL, options);
-
-                this.networkMonitor.registerClient(this);
-
-                this.socket.once('connect', () => {
-                    if (this.options.verbose)
-                        console.log('connection made');
-                    resolve();
-                });
-
-                this.socket.once('error', (error) => {
-                    reject(error);
-                });
-
-                this.socket.on('playerJoined', (playerData) => {
-                    this.gameEngine.playerId = playerData.playerId;
-                    this.messageIndex = Number(this.gameEngine.playerId) * 10000;
-                });
-
-                this.socket.on('worldUpdate', (worldData) => {
-                    this.inboundMessages.push(worldData);
-                });
-
-                this.socket.on('roomUpdate', (roomData) => {
-                    this.gameEngine.emit('client__roomUpdate', roomData);
-                });
+                    console.log('connection made');
+                resolve();
             });
-        };
 
-        let matchmaker = Promise.resolve({ serverURL: this.options.serverURL, status: 'ok' });
-        if (this.options.matchmaker)
-            matchmaker = Utils.httpGetPromise(this.options.matchmaker);
-
-        return matchmaker.then(connectSocket);
+            this.socket.once('error', (error) => {
+                reject(error);
+            });
+        })
     }
 
     /**
@@ -167,7 +192,7 @@ class ClientEngine {
      * @return {Promise} Resolves once the Renderer has been initialized, and the game is
      * ready to connect
      */
-    start() {
+    start(): Promise<void> {
         this.stopped = false;
         this.resolved = false;
         // initialize the renderer
@@ -187,7 +212,7 @@ class ClientEngine {
         return this.renderer.init().then(() => {
             this.gameEngine.start();
 
-            if (this.options.scheduler === 'fixed') {
+            if (this.options.scheduler === SchedulerType.Fixed) {
                 // schedule and start the game loop
                 this.scheduler = new Scheduler({
                     period: this.options.stepPeriod,
@@ -226,7 +251,7 @@ class ClientEngine {
     /**
      * Disconnect from game server
      */
-    disconnect() {
+    disconnect(): void {
         if (!this.stopped) {
             this.socket.disconnect();
             this.stopped = true;
@@ -234,8 +259,8 @@ class ClientEngine {
     }
 
     // check if client step is too far ahead (leading) or too far
-    // behing (lagging) the server step
-    checkDrift(checkType) {
+    // behind (lagging) the server step
+    checkDrift(checkType): void {
 
         if (!this.gameEngine.highestServerStep)
             return;

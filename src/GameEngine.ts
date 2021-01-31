@@ -1,7 +1,8 @@
-import GameWorld from './GameWorld';
+import GameWorld, { GameObject, GameObjectRef, WorldSettings } from './GameWorld';
 import EventEmitter from 'event-emitter';
 import Timer from './game/Timer';
 import Trace from './lib/Trace';
+import PhysicsEngine from './physics/PhysicsEngine';
 
 /**
  * The GameEngine contains the game logic.  Extend this class
@@ -22,7 +23,30 @@ import Trace from './lib/Trace';
  * and therefore clients must resolve server updates which conflict
  * with client-side predictions.
  */
-class GameEngine {
+
+interface EngineOptions {
+    traceLevel?: number;
+    clientIDSpace?: number;
+}
+
+interface InputDescriptor {
+    input?: string // describe the input(e.g. "up", "down", "fire")
+    messageIndex?: number //input identifier
+    step?: number // the step on which this input occurred
+}
+
+abstract class GameEngine<PE extends PhysicsEngine> implements EventEmitter.Emitter {
+    options: EngineOptions;
+    private _emitter: EventEmitter.Emitter;
+    playerId: number;
+    trace: Trace;
+    world: GameWorld;
+    worldSettings: WorldSettings;
+    timer: Timer;
+    physicsEngine: PE;
+    ignorePhysics: boolean;
+    ignoreInputs: boolean;
+    highestServerStep: any;
 
     /**
       * Create a game engine instance.  This needs to happen
@@ -31,17 +55,17 @@ class GameEngine {
       * @param {Object} options - options object
       * @param {Number} options.traceLevel - the trace level.
       */
-    constructor(options) {
+    constructor(options: EngineOptions, emitter?: EventEmitter.Emitter) {
 
         // place the game engine in the LANCE globals
         const isServerSide = (typeof window === 'undefined');
-        const glob = isServerSide ? global : window;
+        const glob: any = isServerSide ? global : window;
         glob.LANCE = { gameEngine: this };
 
         // set options
-        const defaultOpts = { traceLevel: Trace.TRACE_NONE };
+        const defaultOpts: EngineOptions = { traceLevel: Trace.TRACE_NONE };
         if (!isServerSide) defaultOpts.clientIDSpace = 1000000;
-        this.options = Object.assign(defaultOpts, options);
+        this.options = { ...defaultOpts, ...options };
 
         /**
          * client's player ID, as a string. If running on the client, this is set at runtime by the clientEngine
@@ -50,55 +74,69 @@ class GameEngine {
         this.playerId = NaN;
 
         // set up event emitting and interface
-        let eventEmitter = this.options.eventEmitter;
-        if (typeof eventEmitter === 'undefined')
-            eventEmitter = new EventEmitter();
-
-        /**
-         * Register a handler for an event
-         *
-         * @method on
-         * @memberof GameEngine
-         * @instance
-         * @param {String} eventName - name of the event
-         * @param {Function} eventHandler - handler function
-         */
-        this.on = eventEmitter.on;
-
-        /**
-         * Register a handler for an event, called just once (if at all)
-         *
-         * @method once
-         * @memberof GameEngine
-         * @instance
-         * @param {String} eventName - name of the event
-         * @param {Function} eventHandler - handler function
-         */
-        this.once = eventEmitter.once;
-
-        /**
-         * Remove a handler
-         *
-         * @method removeListener
-         * @memberof GameEngine
-         * @instance
-         * @param {String} eventName - name of the event
-         * @param {Function} eventHandler - handler function
-         */
-        this.removeListener = eventEmitter.off;
-        this.off = eventEmitter.off;
-
-        this.emit = eventEmitter.emit;
+        this._emitter = emitter || EventEmitter();
 
         // set up trace
         this.trace = new Trace({ traceLevel: this.options.traceLevel });
     }
 
-    findLocalShadow(serverObj) {
 
-        for (let localId of Object.keys(this.world.objects)) {
-            if (Number(localId) < this.options.clientIDSpace) continue;
-            let localObj = this.world.objects[localId];
+    /**
+    * Register a handler for an event
+    *
+    * @method on
+    * @memberof GameEngine
+    * @instance
+    * @param {String} eventName - name of the event
+    * @param {Function} eventHandler - handler function
+    */
+    on(eventName: string, eventHandler: (obj?: any) => void): void {
+        this._emitter.on(eventName, eventHandler);
+    }
+
+    /**
+     * Register a handler for an event, called just once (if at all)
+     *
+     * @method once
+     * @memberof GameEngine
+     * @instance
+     * @param {String} eventName - name of the event
+     * @param {Function} eventHandler - handler function
+     */
+    once(eventName: string, eventHandler: (obj?: any) => void): void {
+        this._emitter.once(eventName, eventHandler);
+    }
+
+    /**
+     * Remove a handler
+     *
+     * @method removeListener
+     * @memberof GameEngine
+     * @instance
+     * @param {String} eventName - name of the event
+     * @param {Function} eventHandler - handler function
+     */
+    removeListener(eventName: string, eventHandler: (obj?: any) => void) {
+        this._emitter.off(eventName, eventHandler);
+    }
+
+
+    off(eventName: string, eventHandler: (obj?: any) => void) {
+        this._emitter.off(eventName, eventHandler);
+    }
+
+    emit(eventName: string, ...args: any[]) {
+        this._emitter.emit(eventName, ...args);
+    }
+
+    /**
+     * Find a local copy of a server object
+     * @param serverObj 
+     */
+    findLocalShadow(serverObj: GameObject): GameObject | null {
+
+        for (const localObj of this.world) {
+            if (Number(localObj.id) < this.options.clientIDSpace) continue;
             if (localObj.hasOwnProperty('inputId') && localObj.inputId === serverObj.inputId)
                 return localObj;
         }
@@ -106,23 +144,8 @@ class GameEngine {
         return null;
     }
 
-    initWorld(worldSettings) {
-
-        this.world = new GameWorld();
-
-        // on the client we have a different ID space
-        if (this.options.clientIDSpace) {
-            this.world.idCount = this.options.clientIDSpace;
-        }
-
-        /**
-        * The worldSettings defines the game world constants, such
-        * as width, height, depth, etc. such that all other classes
-        * can reference these values.
-        * @member {Object} worldSettings
-        * @memberof GameEngine
-        */
-        this.worldSettings = Object.assign({}, worldSettings);
+    initWorld(worldSettings?: WorldSettings) {
+        this.world = new GameWorld({ ...worldSettings, idSpace: this.options.clientIDSpace });
     }
 
     /**
@@ -138,7 +161,7 @@ class GameEngine {
         // create the default timer
         this.timer = new Timer();
         this.timer.play();
-        this.on('postStep', (step, isReenact) => {
+        this.on('postStep', ({ isReenact }) => {
             if (!isReenact) this.timer.tick();
         });
 
@@ -153,7 +176,7 @@ class GameEngine {
       * @param {Number} dt - elapsed time since last step was called.  (optional)
       * @param {Boolean} physicsOnly - do a physics step only, no game logic
       */
-    step(isReenact, t, dt, physicsOnly) {
+    step(isReenact: boolean, t?: number, dt?: number, physicsOnly?: boolean,) {
         // physics-only step
         if (physicsOnly) {
             if (dt) dt /= 1000; // physics engines work in seconds
@@ -184,10 +207,10 @@ class GameEngine {
         // for each object
         // - apply incremental bending
         // - refresh object positions after physics
-        this.world.forEachObject((id, o) => {
+        this.world.forEach((o) => {
             if (typeof o.refreshFromPhysics === 'function')
                 o.refreshFromPhysics();
-            this.trace.trace(() => `object[${id}] after ${isReenact ? 'reenact' : 'step'} : ${o.toString()}`);
+            this.trace.trace(() => `object[${o.id}] after ${isReenact ? 'reenact' : 'step'} : ${o.toString()}`);
         });
 
         // emit postStep event
@@ -203,13 +226,13 @@ class GameEngine {
      * @param {Object} object - the object.
      * @return {Object} the final object.
      */
-    addObjectToWorld(object) {
+    addObjectToWorld(object): Object {
 
         // if we are asked to create a local shadow object
         // the server copy may already have arrived.
         if (Number(object.id) >= this.options.clientIDSpace) {
             let serverCopyArrived = false;
-            this.world.forEachObject((id, o) => {
+            this.world.forEach((o) => {
                 if (o.hasOwnProperty('inputId') && o.inputId === object.inputId) {
                     serverCopyArrived = true;
                     return false;
@@ -221,7 +244,7 @@ class GameEngine {
             }
         }
 
-        this.world.addObject(object);
+        this.world.push(object);
 
         // tell the object to join the game, by creating
         // its corresponding physical entities and renderer entities.
@@ -249,28 +272,23 @@ class GameEngine {
      * the ID of a player.
      *
      * @param {Object} inputDesc - input descriptor object
-     * @param {String} inputDesc.input - describe the input (e.g. "up", "down", "fire")
-     * @param {Number} inputDesc.messageIndex - input identifier
-     * @param {Number} inputDesc.step - the step on which this input occurred
+    
      * @param {Number} playerId - the player ID
      * @param {Boolean} isServer - indicate if this function is being called on the server side
      */
-    processInput(inputDesc, playerId, isServer) {
-        this.trace.info(() => `game engine processing input[${inputDesc.messageIndex}] <${inputDesc.input}> from playerId ${playerId}`);
-    }
+    abstract processInput(inputDesc: InputDescriptor, playerId: number, isServer: boolean): void
 
     /**
      * Remove an object from the game world.
      *
      * @param {Object|String} objectId - the object or object ID
      */
-    removeObjectFromWorld(objectId) {
+    removeObjectFromWorld(ref: GameObjectRef) {
 
-        if (typeof objectId === 'object') objectId = objectId.id;
-        let object = this.world.objects[objectId];
+        let object = this.world.get(ref);
 
         if (!object) {
-            throw new Error(`Game attempted to remove a game object which doesn't (or never did) exist, id=${objectId}`);
+            throw new Error(`Game attempted to remove a game object which doesn't (or never did) exist, id=${ref}`);
         }
         this.trace.info(() => `========== destroying object ${object.toString()} ==========`);
 
@@ -278,7 +296,7 @@ class GameEngine {
             object.onRemoveFromWorld(this);
 
         this.emit('objectDestroyed', object);
-        this.world.removeObject(objectId);
+        this.world.delete(ref);
     }
 
     /**
@@ -287,7 +305,7 @@ class GameEngine {
      * @param {Object} object the game object to check
      * @return {Boolean} true if the game object is owned by the player on this client
      */
-    isOwnedByPlayer(object) {
+    isOwnedByPlayer(object): boolean {
         return (object.playerId == this.playerId);
     }
 
@@ -302,17 +320,14 @@ class GameEngine {
      *
      * @param {Serializer} serializer - the serializer
      */
-    registerClasses(serializer) {
-    }
+    abstract registerClasses(serializer: Serializer): void;
 
     /**
      * Decide whether the player game is over by returning an Object, need to be implemented
      *
      * @return {Object} truthful if the game is over for the player and the object is returned as GameOver data
      */
-    getPlayerGameOverResult() {
-        return null;
-    }
+    abstract getPlayerGameOverResult(): Object
 }
 
 /**
@@ -394,17 +409,17 @@ class GameEngine {
  * @param {Object} sync - the synchronization object
  */
 
- /**
-  * Marks the beginning of a game step on the client
-  *
-  * @event GameEngine#client__preStep
-  */
+/**
+ * Marks the beginning of a game step on the client
+ *
+ * @event GameEngine#client__preStep
+ */
 
- /**
-  * Marks the end of a game step on the client
-  *
-  * @event GameEngine#client__postStep
-  */
+/**
+ * Marks the end of a game step on the client
+ *
+ * @event GameEngine#client__postStep
+ */
 
 /**
  * An input needs to be handled.  Emitted just before the GameEngine
@@ -433,14 +448,14 @@ class GameEngine {
  * @param {Number} playerId - the player ID
  */
 
- /**
-  * Client moved from one room to another
-  *
-  * @event GameEngine#server__roomUpdate
-  * @param {Number} playerId - the player ID
-  * @param {String} from - the room from which the client came
-  * @param {String} to - the room to which the client went
-  */
+/**
+ * Client moved from one room to another
+ *
+ * @event GameEngine#server__roomUpdate
+ * @param {Number} playerId - the player ID
+ * @param {String} from - the room from which the client came
+ * @param {String} to - the room to which the client went
+ */
 
 /**
  * An input needs to be handled.
@@ -465,23 +480,23 @@ class GameEngine {
  * @param {Number} maxStepCount - highest step in the sync
  */
 
- /**
-  * Client moved from one room to another
-  *
-  * @event GameEngine#client__roomUpdate
-  * @param {Number} playerId - the player ID
-  * @param {String} from - the room from which the client came
-  * @param {String} to - the room to which the client went
-  */
+/**
+ * Client moved from one room to another
+ *
+ * @event GameEngine#client__roomUpdate
+ * @param {Number} playerId - the player ID
+ * @param {String} from - the room from which the client came
+ * @param {String} to - the room to which the client went
+ */
 
- /**
-  * Client reset the world step
-  *
-  * @event GameEngine#client__stepReset
-  * @param {Object} resetDesc - sync from the server
-  * @param {Number} oldStep - the old step count
-  * @param {Number} newStep - the new step count
-  */
+/**
+ * Client reset the world step
+ *
+ * @event GameEngine#client__stepReset
+ * @param {Object} resetDesc - sync from the server
+ * @param {Number} oldStep - the old step count
+ * @param {Number} newStep - the new step count
+ */
 
 /**
  * Marks the beginning of a game step on the server
@@ -506,19 +521,19 @@ class GameEngine {
  * @param {String} input.playerId - player that sent the input
  */
 
- /**
-  * Report slow frame rate on the browser.
-  * The browser did not achieve a reasonable frame rate
-  *
-  * @event GameEngine#client__slowFrameRate
-  */
+/**
+ * Report slow frame rate on the browser.
+ * The browser did not achieve a reasonable frame rate
+ *
+ * @event GameEngine#client__slowFrameRate
+ */
 
-  /**
-   * server has started
-   *
-   * @event GameEngine#start
-   * @param {Number} timestamp - UTC epoch of start time
-   */
+/**
+ * server has started
+ *
+ * @event GameEngine#start
+ * @param {Number} timestamp - UTC epoch of start time
+ */
 
 // TODO: the declaration "export default" could be done as part of the class
 // declaration up above, but the current version of jsdoc doesn't support this.

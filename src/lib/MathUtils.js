@@ -1,22 +1,22 @@
-export default class MathUtils {
+export default {
 
     // interpolate from start to end, advancing "percent" of the way
-    static interpolate(start, end, percent) {
+    interpolate(start, end, percent) {
         return (end - start) * percent + start;
-    }
+    },
 
     // interpolate from start to end, advancing "percent" of the way
     //
     // returns just the delta. i.e. the value that must be added to the start value
-    static interpolateDelta(start, end, percent) {
+    interpolateDelta(start, end, percent) {
         return (end - start) * percent;
-    }
+    },
 
     // interpolate from start to end, advancing "percent" of the way
     // and noting that the dimension wraps around {x >= wrapMin, x < wrapMax}
     //
     // returns just the delta. i.e. the value that must be added to the start value
-    static interpolateDeltaWithWrapping(start, end, percent, wrapMin, wrapMax) {
+    interpolateDeltaWithWrapping(start, end, percent, wrapMin, wrapMax) {
         let wrapTest = wrapMax - wrapMin;
         if (start - end > wrapTest / 2) end += wrapTest;
         else if (end - start > wrapTest / 2) start += wrapTest;
@@ -24,9 +24,9 @@ export default class MathUtils {
             console.log('wrap interpolation is close to limit.  Not sure which edge to wrap to.');
         }
         return (end - start) * percent;
-    }
+    },
 
-    static interpolateWithWrapping(start, end, percent, wrapMin, wrapMax) {
+    interpolateWithWrapping(start, end, percent, wrapMin, wrapMax) {
         let interpolatedVal = start + this.interpolateDeltaWithWrapping(start, end, percent, wrapMin, wrapMax);
         let wrapLength = wrapMax - wrapMin;
         if (interpolatedVal >= wrapLength) interpolatedVal -= wrapLength;
