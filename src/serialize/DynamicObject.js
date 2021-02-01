@@ -14,6 +14,7 @@ import MathUtils from '../lib/MathUtils';
  * allow the client to extrapolate the position
  * of dynamic objects in-between server updates.
  */
+
 class DynamicObject extends GameObject {
 
     /**

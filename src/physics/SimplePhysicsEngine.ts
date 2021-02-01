@@ -16,6 +16,9 @@ let dx = new TwoVector();
  * game behaviour in platformer games.
  */
 class SimplePhysicsEngine extends PhysicsEngine {
+    collisionDetection: any;
+    gravity: any;
+    gameEngine: any;
 
     /**
     * Creates an instance of the Simple Physics Engine.
