@@ -1,5 +1,10 @@
 import Serializable from './Serializable';
 import BaseTypes from './BaseTypes';
+import { networked } from './NetworkScheme';
+
+import TYPES from './BaseTypes';
+
+const { INT16, INT32 } = TYPES;
 
 /**
  * GameObject is the base class of all game objects.
@@ -9,13 +14,12 @@ import BaseTypes from './BaseTypes';
  * or PhysicalObject.
  */
 class GameObject extends Serializable {
+    gameEngine: any;
 
-    static get netScheme() {
-        return {
-            id: { type: BaseTypes.TYPES.INT32 },
-            playerId: { type: BaseTypes.TYPES.INT16 }
-        };
-    }
+    @networked(INT32) id: number;
+    @networked(INT16) playerId: any;
+    components: {};
+    savedCopy: Partial<this>;
 
     /**
     * Creates an instance of a game object.
@@ -67,14 +71,14 @@ class GameObject extends Serializable {
      * and any other resources that should be created
      * @param {GameEngine} gameEngine the game engine
      */
-    onAddToWorld(gameEngine) {}
+    onAddToWorld(gameEngine) { }
 
     /**
      * Called after the object is removed from game-world.
      * This is where renderer sub-objects and any other resources should be freed
      * @param {GameEngine} gameEngine the game engine
      */
-    onRemoveFromWorld(gameEngine) {}
+    onRemoveFromWorld(gameEngine) { }
 
     /**
      * Formatted textual description of the game object.
@@ -96,33 +100,33 @@ class GameObject extends Serializable {
         this.savedCopy = (new this.constructor(this.gameEngine, { id: null }));
         this.savedCopy.syncTo(other ? other : this);
     }
-   /**
-    * Bending is defined as the amount of error correction that will be applied
-    * on the client side to a given object's physical attributes, incrementally,
-    * by the time the next server broadcast is expected to arrive.
-    *
-    * When this percentage is 0.0, the client always ignores the server object's value.
-    * When this percentage is 1.0, the server object's attributes will be applied in full.
-    *
-    * The GameObject bending attribute is implemented as a getter, and can provide
-    * distinct values for position, velocity, angle, and angularVelocity.
-    * And in each case, you can also provide overrides for local objects,
-    * these attributes will be called, respectively, positionLocal, velocityLocal,
-    * angleLocal, angularVelocityLocal.
-    *
-    * @example
-    * get bending() {
-    *   return {
-    *     position: { percent: 1.0, min: 0.0 },
-    *     velocity: { percent: 0.0, min: 0.0 },
-    *     angularVelocity: { percent: 0.0 },
-    *     angleLocal: { percent: 1.0 }
-    *   }
-    * };
-    *
-    * @memberof GameObject
-    * @member {Object} bending
-    */
+    /**
+     * Bending is defined as the amount of error correction that will be applied
+     * on the client side to a given object's physical attributes, incrementally,
+     * by the time the next server broadcast is expected to arrive.
+     *
+     * When this percentage is 0.0, the client always ignores the server object's value.
+     * When this percentage is 1.0, the server object's attributes will be applied in full.
+     *
+     * The GameObject bending attribute is implemented as a getter, and can provide
+     * distinct values for position, velocity, angle, and angularVelocity.
+     * And in each case, you can also provide overrides for local objects,
+     * these attributes will be called, respectively, positionLocal, velocityLocal,
+     * angleLocal, angularVelocityLocal.
+     *
+     * @example
+     * get bending() {
+     *   return {
+     *     position: { percent: 1.0, min: 0.0 },
+     *     velocity: { percent: 0.0, min: 0.0 },
+     *     angularVelocity: { percent: 0.0 },
+     *     angleLocal: { percent: 1.0 }
+     *   }
+     * };
+     *
+     * @memberof GameObject
+     * @member {Object} bending
+     */
     get bending() {
         return {
             position: { percent: 1.0, min: 0.0 },
@@ -156,16 +160,16 @@ class GameObject extends Serializable {
     }
 
     // copy physical attributes to physics sub-object
-    refreshToPhysics() {}
+    refreshToPhysics() { }
 
     // copy physical attributes from physics sub-object
-    refreshFromPhysics() {}
+    refreshFromPhysics() { }
 
     // apply a single bending increment
     applyIncrementalBending() { }
 
     // clean up resources
-    destroy() {}
+    destroy() { }
 
     addComponent(componentInstance) {
         componentInstance.parentObject = this;

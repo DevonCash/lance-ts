@@ -1,5 +1,9 @@
 {
   "compilerOptions": {
-    "allowSyntheticDefaultImports": true
-  }
+    "experimentalDecorators": true,
+    "target": "ES5",
+    "allowSyntheticDefaultImports": true,
+    "downlevelIteration": true,
+    "lib": ["ES2015"]
+  },
 }

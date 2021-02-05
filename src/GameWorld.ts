@@ -4,16 +4,9 @@
  * It is the state of the game.
  */
 
-export interface GameObject {
-    pruneStringsClone(serializer: any, prevObj: any): GameObject;
-    serialize(serializer: any);
-    _roomName: any;
-    refreshFromPhysics();
-    id: number;
-    inputId?: number
+import GameObject from "./serialize/GameObject";
 
-}
-export type GameObjectRef = GameObject | number | string;
+export type GameObjectRef = GameObject | number;
 
 export interface WorldSettings {
     idSpace: number;

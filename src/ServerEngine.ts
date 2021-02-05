@@ -48,7 +48,7 @@ abstract class ServerEngine {
     rooms: {};
     connectedPlayers: {};
     playerInputQueues: {};
-    objMemory: { [key: string]: any };
+    private _prev: Map<number, ArrayBuffer> = new Map();
     scheduler: Scheduler;
     serverTime: number;
 
@@ -107,7 +107,7 @@ abstract class ServerEngine {
         this.createRoom(this.DEFAULT_ROOM_NAME);
         this.connectedPlayers = {};
         this.playerInputQueues = {};
-        this.objMemory = {};
+        this._prev = {};
 
         io.on('connection', this.onPlayerConnected.bind(this));
         this.gameEngine.on('objectAdded', this.onObjectAdded.bind(this));
@@ -164,9 +164,9 @@ abstract class ServerEngine {
         Object.keys(this.rooms).forEach(this.syncStateToClients, this);
 
         // remove memory-objects which no longer exist
-        for (const objId of Object.keys(this.objMemory)) {
+        for (const objId of Object.keys(this._prev)) {
             if (!this.gameEngine.world.has(objId)) {
-                delete this.objMemory[objId];
+                delete this._prev[objId];
             }
         }
 
@@ -220,30 +220,31 @@ abstract class ServerEngine {
     // TODO: this process could be made much much faster if the buffer creation and
     //       size calculation are done in a single phase, along with string pruning.
     serializeUpdate(roomName, options) {
-        let world = this.gameEngine.world;
-        let diffUpdate = Boolean(options && options.diffUpdate);
+        let objects = this.gameEngine.allObjects();
+        let diffUpdate = options && options.diffUpdate;
 
         // add this sync header
         // currently this is just the sync step count
         this.networkTransmitter.addNetworkedEvent('syncHeader', {
-            stepCount: world.stepCount,
+            stepCount: objects.stepCount,
             fullUpdate: Number(!diffUpdate)
         });
 
-        world.forEach(o => {
+        objects.forEach(o => {
             if (o._roomName !== roomName) return;
-            const prevObj = this.objMemory[o.id];
+            const prevObj = this._prev.get(o.id);
 
             if (diffUpdate) {
+                if (!o.modified) return;
                 const s = o.serialize(this.serializer);
                 if (prevObj && Utils.arrayBuffersEqual(s.dataBuffer, prevObj)) return;
-                this.objMemory[o.id] = s.dataBuffer;
+                this._prev[o.id] = s.dataBuffer;
 
                 o = o.pruneStringsClone(this.serializer, prevObj)
             }
 
             this.networkTransmitter.addNetworkedEvent('objectUpdate', {
-                stepCount: world.stepCount,
+                stepCount: objects.stepCount,
                 objectInstance: o
             })
         })

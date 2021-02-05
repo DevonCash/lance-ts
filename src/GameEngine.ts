@@ -35,9 +35,11 @@ interface InputDescriptor {
     step?: number // the step on which this input occurred
 }
 
+
 abstract class GameEngine<PE extends PhysicsEngine> implements EventEmitter.Emitter {
     options: EngineOptions;
     private _emitter: EventEmitter.Emitter;
+    private objects: Map<number, GameObject> = new Map();
     playerId: number;
     trace: Trace;
     world: GameWorld;
@@ -135,9 +137,9 @@ abstract class GameEngine<PE extends PhysicsEngine> implements EventEmitter.Emit
      */
     findLocalShadow(serverObj: GameObject): GameObject | null {
 
-        for (const localObj of this.world) {
-            if (Number(localObj.id) < this.options.clientIDSpace) continue;
-            if (localObj.hasOwnProperty('inputId') && localObj.inputId === serverObj.inputId)
+        for (const [id, localObj] of this.objects) {
+            if (id < this.options.clientIDSpace) continue;
+            if (localObj.inputId === serverObj.inputId)
                 return localObj;
         }
 
@@ -207,7 +209,7 @@ abstract class GameEngine<PE extends PhysicsEngine> implements EventEmitter.Emit
         // for each object
         // - apply incremental bending
         // - refresh object positions after physics
-        this.world.forEach((o) => {
+        this.objects.forEach((o) => {
             if (typeof o.refreshFromPhysics === 'function')
                 o.refreshFromPhysics();
             this.trace.trace(() => `object[${o.id}] after ${isReenact ? 'reenact' : 'step'} : ${o.toString()}`);
@@ -226,25 +228,19 @@ abstract class GameEngine<PE extends PhysicsEngine> implements EventEmitter.Emit
      * @param {Object} object - the object.
      * @return {Object} the final object.
      */
-    addObjectToWorld(object): Object {
+    addObject(object): Object {
 
         // if we are asked to create a local shadow object
         // the server copy may already have arrived.
         if (Number(object.id) >= this.options.clientIDSpace) {
-            let serverCopyArrived = false;
-            this.world.forEach((o) => {
-                if (o.hasOwnProperty('inputId') && o.inputId === object.inputId) {
-                    serverCopyArrived = true;
-                    return false;
-                }
-            });
+            let serverCopyArrived = Array.from(this.objects).some(([_, o]) => o.inputId === object.inputId)
             if (serverCopyArrived) {
                 this.trace.info(() => `========== shadow object NOT added ${object.toString()} ==========`);
                 return null;
             }
         }
 
-        this.world.push(object);
+        this.objects.set(object.id, object);
 
         // tell the object to join the game, by creating
         // its corresponding physical entities and renderer entities.
@@ -272,7 +268,7 @@ abstract class GameEngine<PE extends PhysicsEngine> implements EventEmitter.Emit
      * the ID of a player.
      *
      * @param {Object} inputDesc - input descriptor object
-    
+     
      * @param {Number} playerId - the player ID
      * @param {Boolean} isServer - indicate if this function is being called on the server side
      */
@@ -283,9 +279,11 @@ abstract class GameEngine<PE extends PhysicsEngine> implements EventEmitter.Emit
      *
      * @param {Object|String} objectId - the object or object ID
      */
-    removeObjectFromWorld(ref: GameObjectRef) {
+    removeObject(ref: GameObjectRef) {
 
-        let object = this.world.get(ref);
+        const id = typeof ref === 'number' ? ref : ref.id
+
+        const object = this.objects.get(id);
 
         if (!object) {
             throw new Error(`Game attempted to remove a game object which doesn't (or never did) exist, id=${ref}`);
@@ -296,7 +294,11 @@ abstract class GameEngine<PE extends PhysicsEngine> implements EventEmitter.Emit
             object.onRemoveFromWorld(this);
 
         this.emit('objectDestroyed', object);
-        this.world.delete(ref);
+        this.objects.delete(id);
+    }
+
+    allObjects(): GameObject[] {
+        return Array.from(this.objects.values());
     }
 
     /**
